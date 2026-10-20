@@ -1,0 +1,9 @@
+# machine-specific knowledge and scripts (see local.example/)
+/local/
+# helper logs
+/logs/
+.DS_Store
+# the global gitignore ignores .claude; publish only the skill, keep other .claude files local
+!/.claude/
+/.claude/*
+!/.claude/skills/
