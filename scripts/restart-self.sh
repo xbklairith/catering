@@ -42,13 +42,17 @@ for i in {1..600}; do
 done
 [[ \$st == idle ]] || { echo "\$(date) ABORT: session never went idle (last status: \$st)"; exit 1; }
 sleep 3
-draft=\$(pane_draft "\$pane")
+draft=\$(pane_draft "\$pane") || { echo "\$(date) ABORT: input box not readable"; exit 1; }
 [[ -n \$draft ]] && { echo "\$(date) ABORT: unsent input in the box: \$draft"; exit 1; }
 herdr agent prompt "\$pane" /exit
 for i in {1..60}; do kill -0 \$pid 2>/dev/null || break; sleep 1; done
 if kill -0 \$pid 2>/dev/null; then
-  herdr pane read "\$pane" | grep -q 'Background work is running' && herdr pane send-keys "\$pane" esc
-  echo "\$(date) ABORT: session did not exit"; exit 1
+  case \$(exit_blocker "\$pane") in
+    scheduled) herdr pane send-keys "\$pane" esc; echo "\$(date) ABORT: scheduled tasks, exit cancelled" ;;
+    feedback)  echo "\$(date) ABORT: unsent feedback draft dialog left open for the user (Esc would discard it)" ;;
+    *)         echo "\$(date) ABORT: session did not exit" ;;
+  esac
+  exit 1
 fi
 sleep 1
 herdr agent start "\$name" --kind claude --pane "\$pane" --timeout 120000 -- "\${flags[@]}" --resume \$sid ||

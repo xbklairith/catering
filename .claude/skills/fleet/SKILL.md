@@ -57,6 +57,12 @@ override this policy for the machine.
   survive. herdr agent names may change (derived names); session ids do not.
 - **Scheduled tasks die on exit.** `/exit` shows "Background work is running" with the
   list of crons — press `esc` and leave the session; tell the user it was skipped.
+- **"You have 1 unsent feedback draft" on `/exit`:** never press `esc` there, it discards the
+  user's feedback. Leave the dialog open and tell the user.
+- **Grey text after `❯` is Claude Code's suggested prompt, not a draft.** It is drawn dim
+  (`ESC[2m`); `pane_draft` reads `--format ansi` and ignores dim text.
+- **New folder → "trust this folder?" prompt.** `start-agent.sh` exits 2 and leaves it for
+  you; read the pane, accept only for the user's own project folders.
 - **Background shells block restarts.** `until grep -q pattern file; do sleep 5; done` can
   wait forever if the task crashed with a different word (`FileNotFoundError` ≠ `error`).
   `stuck-loops.sh` shows the waited-on output so you can tell.

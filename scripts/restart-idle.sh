@@ -10,6 +10,7 @@
 # sessions with a background shell (Bash run_in_background / Monitor), sessions with unsent
 # text in the input box, and sessions whose /exit shows "Background work is running"
 # (scheduled tasks) — that dialog is cancelled with Esc and the session keeps running.
+# An "unsent feedback draft" dialog on /exit is left open for the user: Esc would discard it.
 set -uo pipefail
 source ${0:A:h}/lib.sh
 require herdr jq claude
@@ -31,7 +32,7 @@ restart_one() {
   sid=$(jq -r .sessionId "$meta"); ver=$(jq -r .version "$meta")
   (( ! explicit )) && [[ $ver == "$latest" ]] && { echo "$pane SKIP already $ver"; return; }
   [[ -n $(job_shells "$pid") ]] && { echo "$pane SKIP background shell running (see stuck-loops.sh)"; return; }
-  draft=$(pane_draft "$pane")
+  draft=$(pane_draft "$pane") || { echo "$pane SKIP input box not readable"; return; }
   [[ -n $draft ]] && { echo "$pane SKIP unsent input: ${draft:0:40}"; return; }
   args=("${(@f)$(pane_claude_args "$pane")}"); [[ -z ${args[1]:-} ]] && args=()
   strip_resume flags "${args[@]}"
@@ -44,12 +45,12 @@ restart_one() {
   herdr agent prompt "$pane" "/exit" >/dev/null 2>&1
   for _ in {1..30}; do sleep 1; kill -0 "$pid" 2>/dev/null || break; done
   if kill -0 "$pid" 2>/dev/null; then
-    if herdr pane read "$pane" | grep -q 'Background work is running'; then
-      herdr pane send-keys "$pane" esc >/dev/null
-      echo "$pane SKIP has scheduled/background tasks (exit cancelled, session untouched)"
-    else
-      echo "$pane FAIL did not exit; check: herdr pane read $pane"
-    fi
+    case $(exit_blocker "$pane") in
+      scheduled) herdr pane send-keys "$pane" esc >/dev/null
+                 echo "$pane SKIP has scheduled/background tasks (exit cancelled, session untouched)" ;;
+      feedback)  echo "$pane NEEDS YOU: /exit asks about an unsent feedback draft (Enter reviews and sends, Esc discards it); left open" ;;
+      *)         echo "$pane FAIL did not exit; check: herdr pane read $pane" ;;
+    esac
     return
   fi
   sleep 1

@@ -45,6 +45,14 @@ name=$(agent_name "$label")
 pane=$(herdr workspace create --cwd "$dir" --label "$label" --no-focus | jq -r .result.root_pane.pane_id)
 echo "workspace '$label' pane $pane"
 if ! out=$(herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 120000 -- "${extra[@]}" 2>&1); then
+  # started but stuck on a startup prompt (e.g. trust this folder?): a retry would only hit
+  # "pane busy", so hand the prompt to the caller
+  if [[ $out == *agent_not_ready* ]]; then
+    echo "agent started in pane $pane but is blocked at startup (folder trust prompt?)." >&2
+    echo "read it with: herdr pane read $pane, and answer it" >&2
+    (( rc )) && echo "then turn on remote control: herdr agent prompt $pane /remote-control" >&2
+    exit 2
+  fi
   # name clash with a live agent: retry under a pane-unique name
   out=$(herdr agent start "$(agent_name "$name-${pane//:/}")" --kind "$kind" --pane "$pane" --timeout 120000 -- "${extra[@]}" 2>&1) ||
     { echo "agent start failed in pane $pane (workspace left open): $out" >&2; exit 1; }

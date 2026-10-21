@@ -64,14 +64,35 @@ job_shells() {
 }
 
 # Text the user has typed but not sent in a Claude pane's input box ("" if empty).
-# The fresh-session placeholder 'Try "..."' counts as empty.
+# Returns 1 when the pane can't be read or shows no input box: callers must treat that as
+# "unknown, don't restart", never as an empty box.
+# Claude Code draws its prompt suggestion and the fresh-session 'Try "..."' placeholder
+# dim (ESC[2m), so dim text counts as empty; only normally styled text is a draft.
 pane_draft() {
   setopt localoptions extendedglob
-  local line
-  line=$(herdr pane read "$1" | grep -E '^❯' | tail -1)
+  local screen line esc=$'\e'
+  screen=$(herdr pane read "$1" --format ansi) || return 1
+  line=$(print -r -- "$screen" | grep -a -E "^(${esc}\[[0-9;]*m)*❯" | tail -1)
+  [[ -n $line ]] || return 1
+  line=${line//${esc}\[2m[^${esc}]#/}        # drop dim spans (suggestions)
+  line=${line//${esc}\[[0-9;]#m/}            # drop the remaining styling
   line=${line#❯}
   line=${line//$'\xc2\xa0'/ }                # no-break spaces, as UTF-8 bytes: works in C locale too
   line=${${line##[[:space:]]##}%%[[:space:]]##}
   [[ $line == 'Try "'* ]] && line=""
   print -r -- "$line"
+}
+
+# Why /exit left a Claude pane open: "feedback" (unsent feedback draft: Esc DISCARDS it, so
+# never press it; the user decides), "scheduled" (Background work is running: Esc cancels
+# the exit, tasks keep running), or "" (unknown). The screen also holds old conversation
+# text, so feedback is checked first, anywhere (a false hit only means "ask the user"), and
+# scheduled only in the bottom lines where the dialog is drawn.
+# (Captured, not piped into grep -q: under pipefail an early grep exit fails the pipeline.)
+exit_blocker() {
+  local all bottom
+  all=$(herdr pane read "$1"); bottom=$(herdr pane read "$1" --lines 30)
+  if [[ $all == *'unsent feedback draft'* ]]; then print feedback
+  elif [[ $bottom == *'Background work is running'* ]]; then print scheduled
+  fi
 }

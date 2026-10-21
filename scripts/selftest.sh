@@ -28,12 +28,33 @@ eq "strip id, keep spaced arg" "${(j:|:)out}" "--append-system-prompt|be brief|-
 strip_resume out -r 1f2e --resume=xyz --continue --verbose
 eq "strip -r/--resume=/--continue" "${(j:|:)out}" --verbose
 
-# pane_draft against fake screens (herdr stubbed)
-herdr() { printf '%s\n' '● old turn' '❯ /remote-control' '────' "$SCREEN" '────'; }
-for case in "❯ ||" "❯ half typed|half typed" '❯ Try "how do I log an error?"||' $'❯\xc2\xa0\xc2\xa0||'; do
+# pane_draft against fake screens (herdr stubbed; it answers only when asked for ANSI)
+herdr() { [[ $* == *'--format ansi'* ]] && printf '%s\n' '● old turn' '❯ /remote-control' '────' "$SCREEN" '────'; }
+for case in "❯ ||" "❯ half typed|half typed" '❯ Try "how do I log an error?"||' $'❯\xc2\xa0\xc2\xa0||' \
+           $'❯ \e[0m\e[2mrun the tests again\e[0m\r||' $'❯ \e[0mhalf typed\e[0m\r|half typed'; do
   SCREEN=${case%%|*}; want=${${case#*|}%|}
-  eq "pane_draft [${SCREEN:0:20}]" "$(pane_draft x)" "$want"
+  got=$(pane_draft x); eq "pane_draft [${(V)SCREEN:0:24}]" "$got|$?" "$want|0"
 done
+# unreadable pane or no input box must not look like an empty box
+herdr() { return 2; }
+got=$(pane_draft x); eq "pane_draft read fails" "$got|$?" "|1"
+herdr() { printf '%s\n' 'some dialog' '> option'; }
+got=$(pane_draft x); eq "pane_draft no prompt line" "$got|$?" "|1"
+
+# exit_blocker names the /exit dialog holding a pane open; old conversation text that
+# mentions a dialog must not count (stub honours --lines)
+herdr() { local n=0; [[ $* == *--lines* ]] && n=${@[-1]}; (( n )) && print -r -- "$SCREEN" | tail -n $n || print -r -- "$SCREEN"; }
+filler=$(printf 'conversation line %s\n' {1..40})
+for case in "Background work is running"$'\n  daily ingest\n  Esc to cancel|scheduled' \
+            "You have 1 unsent feedback draft. Enter to review and send, Esc to discard and exit|feedback" \
+            "said: Background work is running"$'\n'"You have 1 unsent feedback draft. Esc to discard and exit|feedback" \
+            "said: Background work is running"$'\n'"$filler"$'\n❯ |' \
+            "❯ |"; do
+  SCREEN=${case%|*}; eq "exit_blocker [${(V)SCREEN:0:24}]" "$(exit_blocker x)" "${case##*|}"
+done
+# a long screen must not break the match under pipefail (grep -q quitting early = SIGPIPE)
+SCREEN=$(printf 'You have 1 unsent feedback draft\n%.0s' {1..60000})
+eq "exit_blocker long screen" "$(exit_blocker x)" feedback
 unfunction herdr
 
 # child_pids sees a child of this shell on both macOS and Linux

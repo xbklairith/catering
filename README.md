@@ -140,6 +140,9 @@ Creates a herdr workspace in `<dir>` and starts an agent in it.
 | `--kind KIND` | any herdr agent kind: `claude` (default), `agy`, `codex`, ... |
 | `--force` | create a workspace even if agents already run in `<dir>` |
 
+If the agent stops at a startup prompt (Claude Code asks whether to trust a new folder),
+the script exits with code 2 and names the pane, so you can answer it.
+
 ```bash
 scripts/start-agent.sh ~/projects/myapp --yolo --rc
 ```
@@ -155,9 +158,13 @@ It **skips**:
 - its own pane
 - agents that are working, blocked or unknown (it checks again right before acting)
 - sessions with a background shell (`run_in_background` jobs, monitors)
-- sessions with unsent text in the input box
+- sessions with unsent text in the input box, or whose input box can't be read
 - sessions with scheduled tasks: Claude Code shows "Background work is running" on
   `/exit`; the script presses Esc and leaves the session running
+- sessions whose `/exit` asks about an unsent feedback draft: Esc would discard it, so the
+  script leaves that dialog open and reports `NEEDS YOU`
+
+Grey suggested-prompt text in the input box is not counted as unsent input.
 
 ### `restart-self.sh [extra claude flags]`
 
@@ -198,6 +205,7 @@ Shared helpers, sourced by the other scripts:
 | `strip_resume array args...` | args without `--resume`/`-r <id>`/`--continue`/`-c` |
 | `child_pids pid`, `job_shells pid` | child processes; background shells of a session |
 | `pane_draft pane` | unsent text in a Claude Code input box |
+| `exit_blocker pane` | which dialog kept `/exit` from exiting: `scheduled`, `feedback` or empty |
 
 ## Local knowledge and scripts
 
