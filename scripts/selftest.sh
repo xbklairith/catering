@@ -57,6 +57,19 @@ SCREEN=$(printf 'You have 1 unsent feedback draft\n%.0s' {1..60000})
 eq "exit_blocker long screen" "$(exit_blocker x)" feedback
 unfunction herdr
 
+# pane_claude_pid / pane_claude_args across herdr output shapes (old argv0, newer argv only,
+# a full path in argv[0]) and a pane without claude
+herdr() { print -r -- "{\"result\":{\"process_info\":{\"foreground_processes\":[$PROC]}}}"; }
+for case in '{"pid":7,"argv0":"claude","argv":["claude","-c"],"name":"2.1.306"}|7|-c' \
+            '{"pid":7,"argv":["claude","-c"],"name":"claude"}|7|-c' \
+            '{"pid":7,"argv":["/home/u/.local/bin/claude","-c"],"name":"2.1.306"}|7|-c' \
+            '{"pid":8,"argv0":"zsh","argv":["zsh"],"name":"zsh"}||'; do
+  PROC=${case%%|*}; rest=${case#*|}
+  eq "pane_claude_pid [${PROC:0:40}]" "$(pane_claude_pid x)" "${rest%%|*}"
+  eq "pane_claude_args [${PROC:0:40}]" "$(pane_claude_args x)" "${rest#*|}"
+done
+unfunction herdr
+
 # child_pids sees a child of this shell on both macOS and Linux
 sleep 5 & kid=$!
 [[ " $(child_pids $$ | tr '\n' ' ') " == *" $kid "* ]] && ok "child_pids ($FLEET_OS)" || bad "child_pids ($FLEET_OS)"

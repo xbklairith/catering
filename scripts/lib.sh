@@ -27,17 +27,19 @@ agent_name() {
   print -r -- ${n:0:32}
 }
 
-# pid of the claude process in a pane, or empty
-pane_claude_pid() {
-  herdr pane process-info --pane "$1" |
-    jq -r '[.result.process_info.foreground_processes[] | select(.argv0=="claude")][0].pid // empty'
+# The claude process in a pane as JSON ({} if none). herdr sends the program as argv0 in
+# older versions and only as argv[0] in newer ones; argv[0] may be a full path. (name is
+# no use on macOS: Claude Code sets its process title to its version.)
+pane_claude_proc() {
+  herdr pane process-info --pane "$1" | jq -c '[.result.process_info.foreground_processes[] |
+    select(((.argv0 // .argv[0] // "") | split("/") | last) == "claude")][0] // {}'
 }
 
+# pid of the claude process in a pane, or empty
+pane_claude_pid() { pane_claude_proc "$1" | jq -r '.pid // empty'; }
+
 # original argv of the claude process in a pane, minus the program name, one arg per line
-pane_claude_args() {
-  herdr pane process-info --pane "$1" |
-    jq -r '[.result.process_info.foreground_processes[] | select(.argv0=="claude")][0].argv // [] | .[1:][]'
-}
+pane_claude_args() { pane_claude_proc "$1" | jq -r '.argv // [] | .[1:][]'; }
 
 # Fill the named array with args minus --resume/-r [id], --resume=*, --continue/-c.
 # usage: strip_resume out_array_name arg...

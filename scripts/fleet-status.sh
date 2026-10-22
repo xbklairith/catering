@@ -10,8 +10,7 @@ echo "latest installed: $(claude --version 2>/dev/null | awk '{print $1}')"
   echo "PANE|STATUS|PID|VERSION|SESSION_ID|NAME|REMOTE|ARGV"
   herdr agent list | jq -r '.result.agents[] | select(.agent=="claude") | "\(.pane_id) \(.agent_status)"' |
     while read -r pane st; do
-      info=$(herdr pane process-info --pane "$pane" |
-        jq -c '[.result.process_info.foreground_processes[] | select(.argv0=="claude")][0] // {}')
+      info=$(pane_claude_proc "$pane")
       pid=$(jq -r '.pid // "-"' <<<"$info")
       argv=$(jq -r '(.argv // []) | join(" ")' <<<"$info")
       meta=$HOME/.claude/sessions/$pid.json
