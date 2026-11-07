@@ -2,9 +2,11 @@
 # Restart idle/done Claude Code sessions in herdr panes so they pick up the latest installed
 # version, resuming the same session ID with the same launch flags.
 #
-# Usage: restart-idle.sh [--dry-run] [PANE_ID...]
+# Usage: restart-idle.sh [--dry-run] [PANE_ID... [-- FLAG...]]
 #   no panes  -> every claude pane that is idle/done and older than the installed version
 #   PANE_ID   -> only those panes (still subject to the safety checks)
+#   -- FLAG.. -> relaunch with these flags instead of the current ones (restore-fleet.sh
+#                uses it to give back flags a bare herdr restore dropped)
 #
 # Never touches: the pane running this script, panes that are working/blocked/unknown,
 # sessions with a background shell (Bash run_in_background / Monitor), sessions with unsent
@@ -19,7 +21,13 @@ dry=0
 [[ ${1:-} == --dry-run ]] && { dry=1; shift; }
 latest=$(claude --version 2>/dev/null | awk '{print $1}')
 self=${HERDR_PANE_ID:-}
-explicit=$(( $# > 0 ))
+typeset -a panes override; reflag=0
+while (( $# )); do
+  [[ $1 == -- ]] && { reflag=1; shift; override=("$@"); break; }
+  panes+=("$1"); shift
+done
+explicit=$(( ${#panes} > 0 ))
+(( reflag && ! explicit )) && { echo "-- FLAG... needs explicit panes" >&2; exit 1; }
 
 restart_one() {
   local pane=$1 st pid meta sid ver name np draft
@@ -35,7 +43,7 @@ restart_one() {
   draft=$(pane_draft "$pane") || { echo "$pane SKIP input box not readable"; return; }
   [[ -n $draft ]] && { echo "$pane SKIP unsent input: ${draft:0:40}"; return; }
   args=("${(@f)$(pane_claude_args "$pane")}"); [[ -z ${args[1]:-} ]] && args=()
-  strip_resume flags "${args[@]}"
+  if (( reflag )); then flags=("${override[@]}"); else strip_resume flags "${args[@]}"; fi
   name=$(agent_name "$(jq -r .name "$meta")")
   if (( dry )); then echo "$pane WOULD restart v$ver -> v$latest: claude ${(j: :)${(@q-)flags}} --resume $sid"; return; fi
 
@@ -68,7 +76,6 @@ restart_one() {
   fi
 }
 
-panes=("$@")
 (( explicit )) || panes=("${(@f)$(herdr agent list | jq -r '.result.agents[] | select(.agent=="claude") | .pane_id')}")
 echo "latest installed: $latest"
 for p in "${panes[@]}"; do restart_one "$p"; done

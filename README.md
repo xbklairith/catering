@@ -15,6 +15,8 @@ to do that for you:
   in `--dangerously-skip-permissions` mode with `/remote-control` on.
 - **Update without disruption:** restart idle sessions onto a newly installed Claude Code
   version, resuming the same session with the same flags, and leave busy ones alone.
+- **Survive a reboot:** snapshot every agent's pane, directory, session and launch flags, then
+  bring the fleet back afterwards, putting back the flags herdr's own restore leaves out.
 - **Diagnose:** find stuck background loops, and catch CPU-heavy `find` runs and the
   session that started them.
 
@@ -85,6 +87,8 @@ Then ask in plain language. The `fleet` skill maps requests to the scripts:
 | "start claude in yolo mode with remote control on myapp" | `start-agent.sh ~/projects/myapp --yolo --rc` and gives you the link |
 | "update the sessions to the new Claude Code" | `restart-idle.sh --dry-run`, then `restart-idle.sh` |
 | "restart yourself" | `restart-self.sh` |
+| "save the fleet, I'm rebooting" | `save-fleet.sh` |
+| "restore" (after a reboot or herdr restart) | `restore-fleet.sh --dry-run`, then `restore-fleet.sh` |
 | "why won't that session restart?" | `stuck-loops.sh` |
 | "why is find eating my CPU?" | `find-watch.sh` |
 
@@ -147,11 +151,13 @@ the script exits with code 2 and names the pane, so you can answer it.
 scripts/start-agent.sh ~/projects/myapp --yolo --rc
 ```
 
-### `restart-idle.sh [--dry-run] [pane...]`
+### `restart-idle.sh [--dry-run] [pane... [-- flag...]]`
 
 Restarts idle or finished Claude Code sessions that are behind the installed version (or
 only the panes you name), resuming each one's session ID with its original flags, then
-checks that the same session came back. Always try `--dry-run` first.
+checks that the same session came back. Panes you name are restarted whatever their
+version. Always try `--dry-run` first. With `-- flag...` after the panes, it relaunches them
+with those flags instead of their current ones; `restore-fleet.sh` uses this.
 
 It **skips**:
 
@@ -172,6 +178,36 @@ Restarts the session that calls it, through a detached helper. The helper waits 
 current turn to end, sends `/exit`, and relaunches with the same flags and session ID. It
 gives up rather than interrupting if the session isn't idle within 20 minutes or has unsent
 input. Logs go to `logs/`.
+
+### `save-fleet.sh [--force] [--quiet]`
+
+Snapshots the fleet for `restore-fleet.sh`: one row per agent in a herdr pane, plus Claude
+Code sessions started in a plain terminal, with pane, workspace label, agent name, kind,
+directory, session ID and launch flags. Snapshots go to `local/snapshots/` (set
+`FLEET_SNAPSHOTS` to change it); the newest 20 are kept, and nothing is written when
+nothing changed. Run it before a planned reboot.
+
+It refuses to save (exit 2) when sessions that were saved with flags now run without them.
+That is what herdr's own restore leaves behind, and saving it would lose the flags. Run
+`restore-fleet.sh` first, or pass `--force` if you dropped the flags on purpose.
+
+### `restore-fleet.sh [--dry-run] [snapshot]`
+
+Brings the fleet back from the newest snapshot (or the one you name). Safe to re-run. For
+each saved agent:
+
+| Pane now | Action |
+|---|---|
+| runs the saved session with the saved flags | skip |
+| runs the saved session without them | relaunch it with the saved flags, through `restart-idle.sh` and its checks |
+| an empty shell in the saved directory | start the agent there, resuming its session |
+| gone, or in another directory | open a new workspace in the saved directory and start it there |
+| runs a different session | warn and leave it |
+| saved from outside herdr | print the command to resume it by hand |
+
+It never relaunches its own pane. If that pane is an empty shell, the agent saved there
+starts last, in place of the script. If it runs Claude Code without its saved flags, the
+script prints the `restart-self.sh` command that fixes it.
 
 ### `stuck-loops.sh [minutes]`
 
@@ -203,6 +239,10 @@ Shared helpers, sourced by the other scripts:
 | `agent_name text` | turn text into a valid herdr agent name |
 | `pane_claude_pid pane`, `pane_claude_args pane` | the `claude` process in a pane and its argv |
 | `strip_resume array args...` | args without `--resume`/`-r <id>`/`--continue`/`-c` |
+| `split_session var array kind args...` | split an agent's args into its session ID (`--resume` for claude, `--conversation` for agy) and the other flags |
+| `FLEET_SNAPSHOTS`, `snapshot_row`, `snapshot_latest` | where snapshots live, one snapshot line, the newest snapshot file |
+| `snapshot_clobbers prev new` | sessions that lost their saved flags (the save guard) |
+| `restore_action ...` | what `restore-fleet.sh` does with one saved agent |
 | `child_pids pid`, `job_shells pid` | child processes; background shells of a session |
 | `pane_draft pane` | unsent text in a Claude Code input box |
 | `exit_blocker pane` | which dialog kept `/exit` from exiting: `scheduled`, `feedback` or empty |
@@ -238,6 +278,9 @@ files.
 - **Restarts end a process.** The conversation survives because it's resumed, but anything
   that lived only in that process does not. `restart-idle.sh` skips sessions with visible
   work in flight, but run `--dry-run` and read the list first.
+- **A reboot loses more than processes.** Text typed but not sent in an input box is gone,
+  and so is `/tmp`, where Claude Code keeps its scratchpad files. Session-only scheduled
+  tasks come back when a session is resumed, but expire 7 days after they were created.
 - **The manager asks before destructive steps.** It won't close a workspace, close a pane
   or kill a process without your OK.
 
@@ -250,9 +293,15 @@ cron job or a fresh shell, check `PATH`.
 `stuck-loops.sh 0` to see the shell. If its task already finished, the shell is a dead wait;
 stop it, then rerun.
 
-**A session stays on the old version**: it has scheduled tasks. Restarting would delete
-them, so the script leaves it. Recreate the tasks after a manual restart, or wait until
-they are no longer needed.
+**A session stays on the old version**: it has scheduled tasks, so `/exit` stops at
+"Background work is running" and the script leaves it. Restart it by hand ("Exit and
+stop tasks", then `claude <flags> --resume <id>`); session-only tasks come back with the
+session. Check `CronList` before re-creating any, or every job runs twice.
+
+**After a reboot, Claude Code sessions are back but without their flags**: herdr restores
+agent sessions itself, but starts Claude Code as a bare `claude --resume <id>`, without
+the permission mode, `--add-dir` and other flags. Run `restore-fleet.sh` to relaunch them
+with the flags from the last snapshot. `save-fleet.sh` refuses to save (exit 2) until you do.
 
 **`restart-self.sh` did nothing**: read the newest `logs/restart-self-*.log`. It aborts if
 the session never went idle or the input box had text.

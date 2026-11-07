@@ -43,18 +43,80 @@ pane_claude_args() { pane_claude_proc "$1" | jq -r '.argv // [] | .[1:][]'; }
 
 # Fill the named array with args minus --resume/-r [id], --resume=*, --continue/-c.
 # usage: strip_resume out_array_name arg...
-strip_resume() {
-  local __out=$1; shift
-  local -a kept; local skip=0 a
-  for a in "$@"; do
-    if (( skip )); then skip=0; [[ $a == -* ]] || continue; fi
-    case $a in
-      --resume|-r) skip=1 ;;
-      --resume=*|--continue|-c) ;;
-      *) kept+=("$a") ;;
-    esac
+strip_resume() { local __sid; split_session __sid "$1" claude "${@:2}"; }
+
+# Split an agent's launch args into its session id and the rest of its flags.
+#   claude: --resume ID, -r ID, --resume=ID (--continue/-c are dropped too)
+#   agy:    --conversation ID, --conversation=ID
+#   other kinds: no id, every arg stays
+# usage: split_session SID_VAR FLAGS_ARRAY KIND ARG...   (locals are __-prefixed so the
+# caller's variable names can't be shadowed)
+split_session() {
+  local __sidv=$1 __flagsv=$2 __kind=$3 __id="" __a __next=0 __opt=""
+  local -a __kept
+  shift 3
+  case $__kind in claude) __opt=--resume ;; agy) __opt=--conversation ;; esac
+  for __a in "$@"; do
+    if (( __next )); then __next=0; [[ $__a == -* ]] || { __id=$__a; continue; }; fi
+    if [[ -n $__opt && ( $__a == "$__opt" || ( $__kind == claude && $__a == -r ) ) ]]; then __next=1
+    elif [[ -n $__opt && $__a == "$__opt="* ]]; then __id=${__a#*=}
+    elif [[ $__kind == claude && ( $__a == --continue || $__a == -c ) ]]; then :
+    else __kept+=("$__a"); fi
   done
-  set -A $__out "${kept[@]}"
+  : ${(P)__sidv::=$__id}
+  set -A $__flagsv "${__kept[@]}"
+}
+
+# --- fleet snapshots (save-fleet.sh / restore-fleet.sh) ---
+# One line per agent: pane|workspace label|agent name|kind|cwd|session id|flags, flags
+# zsh-quoted and last (so a | inside them is safe). Pane "-" = a Claude session outside herdr.
+FLEET_SNAPSHOTS=${FLEET_SNAPSHOTS:-$FLEET_LOCAL/snapshots}
+
+# usage: snapshot_row PANE LABEL NAME KIND CWD SID FLAG...
+snapshot_row() { print -r -- "${(j:|:)@[1,6]}|${(j: :)${(@q-)@[7,-1]}}"; }
+
+# newest snapshot file, or nothing
+snapshot_latest() { print -r -- $FLEET_SNAPSHOTS/fleet-*.tsv(Nom[1]); }
+
+# Sessions that had flags in PREV and run with none in NEW (same session id): the mark of
+# herdr's own restore, which relaunches Claude as a bare `claude --resume <id>`. Prints
+# "SID (name)" per session; returns 0 if there are any.
+# usage: snapshot_clobbers PREV_ROWS NEW_ROWS
+snapshot_clobbers() {
+  local -A now; local line sid flags name found=1
+  local -a f
+  for line in "${(@f)2}"; do
+    f=("${(@s:|:)line}"); [[ -n ${f[6]:-} ]] && now[${f[6]}]=${(j:|:)f[7,-1]}
+  done
+  for line in "${(@f)1}"; do
+    f=("${(@s:|:)line}"); sid=${f[6]:-}; name=${f[3]:-}; flags=${(j:|:)f[7,-1]}
+    [[ -n $sid && -n $flags && ${+now[$sid]} == 1 && -z ${now[$sid]} ]] && { print -r -- "$sid ($name)"; found=0; }
+  done
+  return $found
+}
+
+# What restore-fleet.sh does with one saved agent; the caller gathers the facts.
+# usage: restore_action PANE SELF_PANE CWD_MATCH RUN_SID SAVED_SID RUN_FLAGS SAVED_FLAGS KIND
+#   PANE "-": saved from outside herdr. CWD_MATCH: 1 when the pane exists in the saved dir.
+#   RUN_SID: session running in the pane ("" = none). Flags as stored (zsh-quoted).
+# prints: manual | self-start | self-skip | self-flags | new | start | other | skip
+#         | reflag (relaunch with the saved flags) | differs (flags differ, kind can't relaunch)
+restore_action() {
+  local pane=$1 self=$2 cwd_ok=$3 run_sid=$4 sid=$5 run_flags=$6 flags=$7 kind=$8 same=0
+  [[ $pane == - ]] && { print manual; return; }
+  [[ ${(j:\0:)${(Q)${(z)run_flags}}} == ${(j:\0:)${(Q)${(z)flags}}} ]] && same=1
+  if [[ $pane == "$self" ]]; then
+    if [[ -z $run_sid ]]; then print self-start
+    elif (( same )); then print self-skip
+    else print self-flags; fi
+    return
+  fi
+  (( cwd_ok )) || { print new; return; }
+  [[ -z $run_sid ]] && { print start; return; }
+  [[ $run_sid != "$sid" ]] && { print other; return; }
+  if (( same )); then print skip
+  elif [[ $kind == claude ]]; then print reflag
+  else print differs; fi
 }
 
 # Bash-tool / Monitor shells under a claude pid (MCP servers are not matched)

@@ -70,6 +70,83 @@ for case in '{"pid":7,"argv0":"claude","argv":["claude","-c"],"name":"2.1.306"}|
 done
 unfunction herdr
 
+# strip_resume must work whatever the caller names its output array
+kept=(); strip_resume kept --model opus --resume abc
+eq "strip_resume into 'kept'" "${(j:|:)kept}" "--model|opus"
+
+# split_session: session id out, everything else stays a flag
+for case in "claude|--permission-mode=x --resume abc|abc|--permission-mode=x" \
+            "claude|-r abc --add-dir '/a b'|abc|--add-dir,/a b" \
+            "claude|--resume=abc -c --verbose|abc|--verbose" \
+            "claude|--resume --verbose||--verbose" \
+            "agy|--conversation=xyz|xyz|" \
+            "agy|--conversation xyz --foo|xyz|--foo" \
+            "codex|resume 123||resume,123"; do
+  parts=("${(@s:|:)case}")
+  sid=unset; flags=(unset)
+  split_session sid flags "${parts[1]}" ${(Q)${(z)parts[2]}}
+  eq "split_session ${parts[1]} [${parts[2]}]" "$sid|${(j:,:)flags}" "${parts[3]}|${parts[4]}"
+done
+
+# a snapshot row keeps flags with spaces, quotes and | intact
+row=$(snapshot_row w1:p2 proj name claude /p/proj S1 --add-dir '/a b|c' "--msg=it's")
+IFS='|' read -r pane label name kind cwd sid flags <<<"$row"
+got=(${(Q)${(z)flags}})
+eq "snapshot_row round trip" "$pane,$label,$name,$kind,$cwd,$sid,${(j:,:)got}" "w1:p2,proj,name,claude,/p/proj,S1,--add-dir,/a b|c,--msg=it's"
+
+# restore_action: PANE SELF CWD_MATCH RUN_SID SAVED_SID RUN_FLAGS SAVED_FLAGS KIND
+B=--permission-mode=bypassPermissions
+for case in "-|w0|0||S1||$B|claude|manual" \
+            "w1|w1|1||S1||$B|claude|self-start" \
+            "w1|w1|1|S1|S1|$B|$B|claude|self-skip" \
+            "w1|w1|1|S1|S1||$B|claude|self-flags" \
+            "w1|w0|0||S1||$B|claude|new" \
+            "w1|w0|1||S1||$B|claude|start" \
+            "w1|w0|1|S9|S1|$B|$B|claude|other" \
+            "w1|w0|1|S1|S1|$B|$B|claude|skip" \
+            "w1|w0|1|S1|S1||$B|claude|reflag" \
+            "w1|w0|1|C1|C1||--x|agy|differs"; do
+  p=("${(@s:|:)case}")
+  eq "restore_action -> ${p[9]} (${p[8]})" "$(restore_action "${(@)p[1,8]}")" "${p[9]}"
+done
+
+# snapshot_clobbers: a save must not overwrite flags with a flag-less herdr restore
+prev=$(snapshot_row w1:p1 a a claude /a S1 $B; snapshot_row w1:p2 a b claude /a S2)
+clob() { local got rc; got=$(snapshot_clobbers "$prev" "$2"); rc=$?; eq "snapshot_clobbers: $1" "$got|$rc" "$3"; }
+clob "flags dropped"   "$(snapshot_row w1:p1 a a claude /a S1; snapshot_row w1:p2 a b claude /a S2)" "S1 (a)|0"
+clob "flags kept"      "$(snapshot_row w1:p1 a a claude /a S1 $B)" "|1"
+clob "session closed"  "$(snapshot_row w1:p2 a b claude /a S2)" "|1"
+
+# end to end, dry runs against a fake herdr/claude and a fake home
+t=$(mktemp -d); mkdir -p $t/bin $t/home/.claude/sessions $t/snap
+cat > $t/bin/herdr <<'EOF'
+#!/bin/zsh
+case "$1 $2" in
+  "agent list") print -r -- "$FAKE_AGENTS" ;;
+  "workspace list") print -r -- '{"result":{"workspaces":[{"workspace_id":"w9","label":"proj"}]}}' ;;
+  "pane process-info") print -r -- "{\"result\":{\"process_info\":{\"foreground_processes\":[$FAKE_PROC]}}}" ;;
+  "pane get") print -r -- "{\"result\":{\"pane\":{\"cwd\":\"$FAKE_CWD\"}}}" ;;
+  "pane read") print -r -- '❯ ' ;;
+  *) exit 3 ;;
+esac
+EOF
+printf '#!/bin/zsh\nprint "2.1.999 (Claude Code)"\n' > $t/bin/claude
+chmod +x $t/bin/herdr $t/bin/claude
+print -r -- '{"sessionId":"S1","version":"2.1.1","name":"proj"}' > $t/home/.claude/sessions/999999.json
+fake() { env PATH=$t/bin:$PATH HOME=$t/home FLEET_SNAPSHOTS=$t/snap HERDR_PANE_ID=wZ:p9 FAKE_CWD=/p/proj \
+  FAKE_AGENTS=${FAKE_AGENTS:-'{"result":{"agents":[{"pane_id":"w9:p9","workspace_id":"w9","name":"proj","agent":"claude","agent_status":"idle","cwd":"/p/proj"}]}}'} \
+  FAKE_PROC='{"pid":999999,"argv":["claude","--resume","S1"]}' "$@" 2>&1; }
+eq "restart-idle flags override" "$(fake $FLEET_HOME/scripts/restart-idle.sh --dry-run w9:p9 -- --model opus | tail -1)" \
+   "w9:p9 WOULD restart v2.1.1 -> v2.1.999: claude --model opus --resume S1"
+print -r -- "# test"$'\n'"w9:p9|proj|proj|claude|/p/proj|S1|$B" > $t/snap/fleet-20260101-000000.tsv
+out=$(fake $FLEET_HOME/scripts/restore-fleet.sh --dry-run)
+[[ $out == *"w9:p9 WOULD relaunch proj with its saved flags: claude $B --resume S1"* ]] && ok "restore-fleet reflags a flag-less resume" || bad "restore-fleet reflag: $out"
+out=$(FAKE_AGENTS='{"result":{"agents":[]}}' fake $FLEET_HOME/scripts/save-fleet.sh); rc=$?
+eq "save-fleet with no agents writes nothing" "$rc|$(print -l $t/snap/*(N) | wc -l | tr -d ' ')" "1|1"
+out=$(fake $FLEET_HOME/scripts/save-fleet.sh); rc=$?
+[[ $rc == 2 && $out == *"S1 (proj)"* ]] && ok "save-fleet refuses to drop saved flags" || bad "save-fleet clobber guard: rc=$rc $out"
+rm -rf $t
+
 # child_pids sees a child of this shell on both macOS and Linux
 sleep 5 & kid=$!
 [[ " $(child_pids $$ | tr '\n' ' ') " == *" $kid "* ]] && ok "child_pids ($FLEET_OS)" || bad "child_pids ($FLEET_OS)"

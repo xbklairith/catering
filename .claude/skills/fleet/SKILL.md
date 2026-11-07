@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: Manage the AI agent fleet on this machine — Claude Code sessions, herdr workspaces/panes, and other coding agents (agy, codex, ...). Use when the user asks for agent/session status, what is blocked, to start an agent on a project (yolo, remote control), to restart sessions onto a new Claude Code version, to restart this manager session, to find stuck background loops, or why find/bfs is eating CPU.
+description: Manage the AI agent fleet on this machine — Claude Code sessions, herdr workspaces/panes, and other coding agents (agy, codex, ...). Use when the user asks for agent/session status, what is blocked, to start an agent on a project (yolo, remote control), to restart sessions onto a new Claude Code version, to restart this manager session, to save the fleet before a reboot or bring it back after one (or after a herdr restart), to find stuck background loops, or why find/bfs is eating CPU.
 ---
 
 # Fleet manager
@@ -31,6 +31,8 @@ there, never into committed files. All herdr output is JSON;
 | Start agent on project | `start-agent.sh <dir> [--yolo] [--rc] [--label NAME] [--kind agy] [--force]` (refuses a dir that already has agents) |
 | Update sessions to new CLI | `restart-idle.sh --dry-run`, then `restart-idle.sh` (or list panes) |
 | Restart this session | `restart-self.sh` — detached helper, waits for the turn to end; end the turn right after |
+| Before a reboot | `save-fleet.sh` (snapshot: pane, dir, session id, launch flags; also Claude sessions outside herdr) |
+| After a reboot or herdr restart | `restore-fleet.sh --dry-run`, then `restore-fleet.sh`; it resumes or re-flags each agent. A `SELF` line means this session lacks its flags: run the printed `restart-self.sh` line and end the turn. Pass on its "resume by hand" lines to the user |
 | Session won't restart | `stuck-loops.sh` → report dead waits; kill only with user OK |
 | `find` eating CPU | `find-watch.sh 300` — prints the find/bfs command and its owning session |
 | After install / pull | `selftest.sh` |
@@ -55,8 +57,17 @@ override this policy for the machine.
   `herdr pane process-info --pane <id>`.
 - **Restart = `/exit` + `claude <same flags> --resume <sessionId>`.** Remote-control links
   survive. herdr agent names may change (derived names); session ids do not.
-- **Scheduled tasks die on exit.** `/exit` shows "Background work is running" with the
-  list of crons — press `esc` and leave the session; tell the user it was skipped.
+- **Scheduled tasks on `/exit`.** Claude Code shows "Background work is running";
+  `restart-idle.sh` presses `esc` and leaves the session. Restarting by hand with "Exit and
+  stop tasks" + `--resume` brings session-only tasks back with the same ids: check `CronList`
+  and never re-create them (that doubles every job). They expire 7 days after they were made,
+  resumed or not.
+- **herdr restores Claude without its flags.** After a reboot or server restart herdr
+  relaunches each Claude pane as a bare `claude --resume <id>`: permission mode, `--add-dir`
+  and the rest are gone. `restore-fleet.sh` puts them back from the newest `save-fleet.sh`
+  snapshot; `save-fleet.sh` refuses to overwrite a snapshot with that flag-less state.
+- **A reboot loses** unsent input-box text, files in `/tmp` (Claude Code scratchpads live
+  there), and every running process. Before a planned reboot, check `blocked.sh` and drafts.
 - **"You have 1 unsent feedback draft" on `/exit`:** never press `esc` there, it discards the
   user's feedback. Leave the dialog open and tell the user.
 - **Grey text after `❯` is Claude Code's suggested prompt, not a draft.** It is drawn dim
