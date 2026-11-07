@@ -15,8 +15,9 @@ to do that for you:
   in `--dangerously-skip-permissions` mode with `/remote-control` on.
 - **Update without disruption:** restart idle sessions onto a newly installed Claude Code
   version, resuming the same session with the same flags, and leave busy ones alone.
-- **Survive a reboot:** snapshot every agent's pane, directory, session and launch flags, then
-  bring the fleet back afterwards, putting back the flags herdr's own restore leaves out.
+- **Survive a reboot:** snapshot every agent's pane, directory, session and launch flags (by
+  hand or every 15 minutes), then bring the fleet back afterwards, putting back the flags
+  herdr's own restore leaves out.
 - **Diagnose:** find stuck background loops, and catch CPU-heavy `find` runs and the
   session that started them.
 
@@ -43,6 +44,7 @@ Works on macOS and Linux.
 | `zsh` | all scripts are zsh |
 | `jq` | herdr and Claude Code session metadata are JSON |
 | `pgrep`, `ps` | process checks (`procps` on Linux) |
+| `launchctl` (macOS) or `crontab` (Linux) | only for `autosave.sh` |
 
 The manager session must run **inside a herdr pane** (herdr sets `HERDR_PANE_ID`).
 
@@ -88,6 +90,7 @@ Then ask in plain language. The `fleet` skill maps requests to the scripts:
 | "update the sessions to the new Claude Code" | `restart-idle.sh --dry-run`, then `restart-idle.sh` |
 | "restart yourself" | `restart-self.sh` |
 | "save the fleet, I'm rebooting" | `save-fleet.sh` |
+| "save the fleet automatically" | `autosave.sh install` |
 | "restore" (after a reboot or herdr restart) | `restore-fleet.sh --dry-run`, then `restore-fleet.sh` |
 | "why won't that session restart?" | `stuck-loops.sh` |
 | "why is find eating my CPU?" | `find-watch.sh` |
@@ -187,9 +190,14 @@ directory, session ID and launch flags. Snapshots go to `local/snapshots/` (set
 `FLEET_SNAPSHOTS` to change it); the newest 20 are kept, and nothing is written when
 nothing changed. Run it before a planned reboot.
 
-It refuses to save (exit 2) when sessions that were saved with flags now run without them.
-That is what herdr's own restore leaves behind, and saving it would lose the flags. Run
-`restore-fleet.sh` first, or pass `--force` if you dropped the flags on purpose.
+It refuses to save (exit 2) when saving would replace a good snapshot with a damaged fleet:
+
+- sessions that were saved with flags now run without them. That is what herdr's own
+  restore leaves behind, and saving it would lose the flags.
+- the machine rebooted after the newest snapshot and `restore-fleet.sh` has not run since.
+  The fleet may be only partly back, and a smaller snapshot would become the newest.
+
+Run `restore-fleet.sh` first, or pass `--force` to save the fleet as it is.
 
 ### `restore-fleet.sh [--dry-run] [snapshot]`
 
@@ -207,7 +215,19 @@ each saved agent:
 
 It never relaunches its own pane. If that pane is an empty shell, the agent saved there
 starts last, in place of the script. If it runs Claude Code without its saved flags, the
-script prints the `restart-self.sh` command that fixes it.
+script prints the `restart-self.sh` command that fixes it. A real run (not `--dry-run`)
+marks the fleet restored, which lets `save-fleet.sh` save again after a reboot.
+
+### `autosave.sh install|remove|status`
+
+Runs `save-fleet.sh` every 15 minutes, so a crash or an unplanned reboot still leaves a
+recent snapshot. On macOS it installs a launchd agent
+(`~/Library/LaunchAgents/catering.autosave.plist`); on Linux it adds one line, marked
+`# catering-autosave`, to your crontab and leaves the rest alone. Set
+`FLEET_SCHEDULER=cron` or `launchd` to choose. Saves and errors go to
+`autosave.log` next to the snapshots; unchanged runs log nothing. `status` shows whether
+it is installed, the newest snapshot and the last log lines. The paths are fixed at
+install time: run `install` again after moving the repo.
 
 ### `stuck-loops.sh [minutes]`
 
@@ -243,6 +263,7 @@ Shared helpers, sourced by the other scripts:
 | `FLEET_SNAPSHOTS`, `snapshot_row`, `snapshot_latest` | where snapshots live, one snapshot line, the newest snapshot file |
 | `snapshot_clobbers prev new` | sessions that lost their saved flags (the save guard) |
 | `restore_action ...` | what `restore-fleet.sh` does with one saved agent |
+| `boot_epoch`, `rebooted_unrestored ...`, `FLEET_RESTORED` | last boot time; whether a save must wait for `restore-fleet.sh` after a reboot |
 | `child_pids pid`, `job_shells pid` | child processes; background shells of a session |
 | `pane_draft pane` | unsent text in a Claude Code input box |
 | `exit_blocker pane` | which dialog kept `/exit` from exiting: `scheduled`, `feedback` or empty |
@@ -302,6 +323,14 @@ session. Check `CronList` before re-creating any, or every job runs twice.
 agent sessions itself, but starts Claude Code as a bare `claude --resume <id>`, without
 the permission mode, `--add-dir` and other flags. Run `restore-fleet.sh` to relaunch them
 with the flags from the last snapshot. `save-fleet.sh` refuses to save (exit 2) until you do.
+
+**`autosave.log` shows `rc=2 not saved: this machine rebooted`**: autosave is holding off
+until the fleet is restored. Run `restore-fleet.sh`, or `save-fleet.sh --force` if you
+don't want the old fleet back.
+
+**`crontab` hangs or fails with `Interrupted system call` on macOS**: writing a crontab
+there waits on a permission dialog. Use the default launchd agent instead (unset
+`FLEET_SCHEDULER`).
 
 **`restart-self.sh` did nothing**: read the newest `logs/restart-self-*.log`. It aborts if
 the session never went idle or the input box had text.

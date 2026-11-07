@@ -95,6 +95,29 @@ snapshot_clobbers() {
   return $found
 }
 
+# restore-fleet.sh touches this file when it has run (not on --dry-run)
+FLEET_RESTORED=$FLEET_SNAPSHOTS/.restored
+
+# when this machine last booted, in epoch seconds (empty if unknown)
+boot_epoch() {
+  if [[ $FLEET_OS == Darwin ]]; then
+    sysctl -n kern.boottime 2>/dev/null | sed -nE 's/^\{ sec = ([0-9]+),.*/\1/p'
+  else
+    awk '/^btime / {print $2}' /proc/stat 2>/dev/null
+  fi
+}
+
+# True when a save must wait for restore-fleet.sh: the machine booted after the newest
+# snapshot and restore-fleet.sh has not run since. Until then the fleet may be only partly
+# back (herdr's own restore can leave panes as plain shells), and saving would make that
+# smaller fleet the newest snapshot. An unknown boot time never holds a save.
+# usage: rebooted_unrestored SNAPSHOT_MTIME BOOT_EPOCH RESTORED_MTIME   ("" = no stamp)
+rebooted_unrestored() {
+  local snap=$1 boot=$2 stamp=$3
+  [[ -n $boot ]] && (( snap < boot )) || return 1
+  [[ -z $stamp ]] || (( stamp < boot ))
+}
+
 # What restore-fleet.sh does with one saved agent; the caller gathers the facts.
 # usage: restore_action PANE SELF_PANE CWD_MATCH RUN_SID SAVED_SID RUN_FLAGS SAVED_FLAGS KIND
 #   PANE "-": saved from outside herdr. CWD_MATCH: 1 when the pane exists in the saved dir.

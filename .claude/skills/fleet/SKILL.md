@@ -32,6 +32,7 @@ there, never into committed files. All herdr output is JSON;
 | Update sessions to new CLI | `restart-idle.sh --dry-run`, then `restart-idle.sh` (or list panes) |
 | Restart this session | `restart-self.sh` — detached helper, waits for the turn to end; end the turn right after |
 | Before a reboot | `save-fleet.sh` (snapshot: pane, dir, session id, launch flags; also Claude sessions outside herdr) |
+| Save automatically | `autosave.sh install` (every 15 min: launchd on macOS, cron on Linux); `autosave.sh status` shows the newest snapshot and the log |
 | After a reboot or herdr restart | `restore-fleet.sh --dry-run`, then `restore-fleet.sh`; it resumes or re-flags each agent. A `SELF` line means this session lacks its flags: run the printed `restart-self.sh` line and end the turn. Pass on its "resume by hand" lines to the user |
 | Session won't restart | `stuck-loops.sh` → report dead waits; kill only with user OK |
 | `find` eating CPU | `find-watch.sh 300` — prints the find/bfs command and its owning session |
@@ -66,6 +67,9 @@ override this policy for the machine.
   relaunches each Claude pane as a bare `claude --resume <id>`: permission mode, `--add-dir`
   and the rest are gone. `restore-fleet.sh` puts them back from the newest `save-fleet.sh`
   snapshot; `save-fleet.sh` refuses to overwrite a snapshot with that flag-less state.
+- **After a reboot, saving waits for the restore.** Until `restore-fleet.sh` has run (not
+  `--dry-run`), `save-fleet.sh` and autosave exit 2 instead of saving a half-restored fleet.
+  `save-fleet.sh --force` only when the user doesn't want the old fleet back.
 - **A reboot loses** unsent input-box text, files in `/tmp` (Claude Code scratchpads live
   there), and every running process. Before a planned reboot, check `blocked.sh` and drafts.
 - **"You have 1 unsent feedback draft" on `/exit`:** never press `esc` there, it discards the

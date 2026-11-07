@@ -8,12 +8,15 @@
 # Usage: save-fleet.sh [--force] [--quiet]
 # Writes $FLEET_SNAPSHOTS/fleet-<time>.tsv (default local/snapshots/, keeps the newest 20).
 # Writes nothing when herdr is unreachable or shows no agents (exit 1), when nothing changed,
-# or when sessions saved with flags now run without them, which is what herdr's own restore
-# leaves behind until restore-fleet.sh runs (exit 2; --force saves anyway).
+# or (exit 2; --force saves anyway) when
+#   - sessions saved with flags now run without them, which is what herdr's own restore
+#     leaves behind until restore-fleet.sh runs, or
+#   - the machine rebooted after the newest snapshot and restore-fleet.sh has not run since.
 set -uo pipefail
 source ${0:A:h}/lib.sh
 require herdr jq
 zmodload zsh/datetime
+zmodload -F zsh/stat b:zstat
 
 force=0 quiet=0
 for a; do
@@ -64,6 +67,13 @@ prev=$(snapshot_latest)
 if [[ -n $prev ]]; then
   old=$(grep -v '^#' "$prev")
   [[ $old == "$new" ]] && { say "unchanged since ${prev:t}"; exit 0; }
+  stamp=""; [[ -f $FLEET_RESTORED ]] && stamp=$(zstat +mtime "$FLEET_RESTORED")
+  if (( ! force )) && rebooted_unrestored "$(zstat +mtime "$prev")" "$(boot_epoch)" "$stamp"; then
+    echo "not saved: this machine rebooted after the newest snapshot (${prev:t}) and" >&2
+    echo "restore-fleet.sh has not run since, so the fleet may be only partly back." >&2
+    echo "Run restore-fleet.sh first, or save-fleet.sh --force to save the fleet as it is now." >&2
+    exit 2
+  fi
   if (( ! force )) && lost=$(snapshot_clobbers "$old" "$new"); then
     echo "not saved: these sessions were saved with launch flags and now run without them," >&2
     echo "as herdr's own restore leaves them. Run restore-fleet.sh first, or save-fleet.sh --force:" >&2

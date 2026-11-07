@@ -10,7 +10,8 @@
 #   saved from outside herdr                           -> print the command to resume by hand
 # The pane running this script is never relaunched: if it is an empty shell, the agent saved
 # there starts in it last (exec); if it runs Claude without its saved flags, the line to fix
-# it with restart-self.sh is printed. Safe to re-run.
+# it with restart-self.sh is printed. Safe to re-run. A real run (not --dry-run) marks the
+# fleet restored, which lets save-fleet.sh save again after a reboot.
 #
 # Usage: restore-fleet.sh [--dry-run] [SNAPSHOT]   (default: the newest snapshot)
 set -uo pipefail
@@ -94,6 +95,7 @@ while IFS='|' read -r -u 3 pane label name kind cwd sid flags; do
       fi ;;
   esac
 done 3< "$file"
+(( dry )) || { mkdir -p "$FLEET_SNAPSHOTS" && touch "$FLEET_RESTORED"; }   # lets save-fleet.sh save again after a reboot
 
 echo "Session-only scheduled tasks come back with --resume but expire 7 days after they were made: check CronList in sessions that had some before re-creating any."
 if (( ${#own} )); then

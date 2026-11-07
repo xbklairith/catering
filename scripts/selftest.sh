@@ -133,7 +133,8 @@ EOF
 printf '#!/bin/zsh\nprint "2.1.999 (Claude Code)"\n' > $t/bin/claude
 chmod +x $t/bin/herdr $t/bin/claude
 print -r -- '{"sessionId":"S1","version":"2.1.1","name":"proj"}' > $t/home/.claude/sessions/999999.json
-fake() { env PATH=$t/bin:$PATH HOME=$t/home FLEET_SNAPSHOTS=$t/snap HERDR_PANE_ID=wZ:p9 FAKE_CWD=/p/proj \
+fake() { env PATH=$t/bin:$PATH HOME=$t/home FLEET_SNAPSHOTS=${SNAP:-$t/snap} HERDR_PANE_ID=wZ:p9 FAKE_CWD=/p/proj FAKE_CRON=$t/crontab \
+  FAKE_LAUNCHD=$t/launchd FLEET_SCHEDULER=${FLEET_SCHEDULER:-} \
   FAKE_AGENTS=${FAKE_AGENTS:-'{"result":{"agents":[{"pane_id":"w9:p9","workspace_id":"w9","name":"proj","agent":"claude","agent_status":"idle","cwd":"/p/proj"}]}}'} \
   FAKE_PROC='{"pid":999999,"argv":["claude","--resume","S1"]}' "$@" 2>&1; }
 eq "restart-idle flags override" "$(fake $FLEET_HOME/scripts/restart-idle.sh --dry-run w9:p9 -- --model opus | tail -1)" \
@@ -145,7 +146,77 @@ out=$(FAKE_AGENTS='{"result":{"agents":[]}}' fake $FLEET_HOME/scripts/save-fleet
 eq "save-fleet with no agents writes nothing" "$rc|$(print -l $t/snap/*(N) | wc -l | tr -d ' ')" "1|1"
 out=$(fake $FLEET_HOME/scripts/save-fleet.sh); rc=$?
 [[ $rc == 2 && $out == *"S1 (proj)"* ]] && ok "save-fleet refuses to drop saved flags" || bad "save-fleet clobber guard: rc=$rc $out"
+
+# a reboot since the newest snapshot blocks saving until restore-fleet.sh has run (the fleet
+# may be only partly back); a snapshot from before 2000 is always older than the boot
+snapb=$t/snapb; mkdir -p $snapb
+print -r -- "# test"$'\n'"w9:p8|proj|proj|claude|/p/proj|S1|" > $snapb/fleet-20000101-000000.tsv
+touch -t 200001010000 $snapb/fleet-20000101-000000.tsv
+out=$(SNAP=$snapb fake $FLEET_HOME/scripts/save-fleet.sh); rc=$?
+[[ $rc == 2 && $out == *reboot* ]] && ok "save-fleet waits for restore after a reboot" || bad "save-fleet reboot guard: rc=$rc $out"
+out=$(SNAP=$snapb fake $FLEET_HOME/scripts/restore-fleet.sh); rc=$?
+[[ -f $snapb/.restored ]] && ok "restore-fleet marks the fleet restored" || bad "restore-fleet stamp: rc=$rc $out"
+rm -f $snapb/.restored; out=$(SNAP=$snapb fake $FLEET_HOME/scripts/restore-fleet.sh --dry-run)
+[[ ! -e $snapb/.restored ]] && ok "restore-fleet --dry-run marks nothing" || bad "restore-fleet --dry-run wrote the stamp"
+touch $snapb/.restored
+out=$(SNAP=$snapb fake $FLEET_HOME/scripts/save-fleet.sh); rc=$?
+eq "save-fleet saves once restored" "$rc|$(print -l $snapb/fleet-*.tsv(N) | wc -l | tr -d ' ')" "0|2"
+
+# autosave, cron: touches only its own crontab line, and that line runs in cron's bare environment
+cat > $t/bin/crontab <<'EOF'
+#!/bin/zsh
+case $1 in
+  -l) [[ -f $FAKE_CRON ]] && cat $FAKE_CRON || { echo "no crontab" >&2; exit 1; } ;;
+  -r) rm -f $FAKE_CRON ;;
+  -)  cat > $FAKE_CRON ;;
+  *)  exit 3 ;;
+esac
+EOF
+chmod +x $t/bin/crontab
+C() { FLEET_SCHEDULER=cron SNAP=$t/snapc fake $FLEET_HOME/scripts/autosave.sh "$@"; }
+print -r -- '0 1 * * * echo other' > $t/crontab
+C install >/dev/null; C install >/dev/null
+eq "autosave cron install: one line, others kept" "$(grep -c catering-autosave $t/crontab)|$(grep -c 'echo other' $t/crontab)" "1|1"
+[[ $(C status) == installed:* ]] && ok "autosave cron status installed" || bad "autosave cron status installed: $(C status)"
+line=$(grep catering-autosave $t/crontab); cmd=${${line#\*/15 \* \* \* \* }%" # catering-autosave"}
+env -i HOME=$t/home sh -c "cd / && $cmd"
+[[ $(cat $t/snapc/autosave.log 2>/dev/null) == *"rc=1 herdr shows no agents"* ]] && ok "autosave cron line runs from / with env -i" || bad "autosave cron line: [$cmd] log: $(cat $t/snapc/autosave.log 2>&1)"
+C remove >/dev/null
+eq "autosave cron remove keeps other lines" "$(cat $t/crontab)" "0 1 * * * echo other"
+[[ $(C status) == "not installed"* ]] && ok "autosave cron status not installed" || bad "autosave cron status not installed"
+
+# autosave, launchd (the macOS default): a LaunchAgent plist loaded into the user's domain
+cat > $t/bin/launchctl <<'EOF'
+#!/bin/zsh
+print -r -- "$*" >> $FAKE_LAUNCHD.log
+case $1 in
+  bootstrap) [[ -f $3 ]] && touch $FAKE_LAUNCHD.loaded ;;
+  bootout)   [[ -f $FAKE_LAUNCHD.loaded ]] && rm -f $FAKE_LAUNCHD.loaded || exit 3 ;;
+  print)     [[ -f $FAKE_LAUNCHD.loaded ]] ;;
+  *)         exit 3 ;;
+esac
+EOF
+chmod +x $t/bin/launchctl
+L() { FLEET_SCHEDULER=launchd SNAP=$t/snapc fake $FLEET_HOME/scripts/autosave.sh "$@"; }
+pl=$t/home/Library/LaunchAgents/catering.autosave.plist
+L install >/dev/null; L install >/dev/null
+[[ -f $pl && $(cat $pl) == *"<string>run</string>"* && $(cat $pl) == *"<integer>900</integer>"* && -f $t/launchd.loaded ]] \
+  && ok "autosave launchd install" || bad "autosave launchd install: $(cat $t/launchd.log 2>&1)"
+if command -v plutil >/dev/null; then plutil -lint -s $pl && ok "autosave plist is valid" || bad "autosave plist is valid"; fi
+[[ $(L status) == installed:* ]] && ok "autosave launchd status installed" || bad "autosave launchd status installed: $(L status)"
+L remove >/dev/null
+[[ ! -e $pl && ! -e $t/launchd.loaded ]] && ok "autosave launchd remove" || bad "autosave launchd remove"
+[[ $(L status) == "not installed"* ]] && ok "autosave launchd status not installed" || bad "autosave launchd status not installed"
 rm -rf $t
+
+# boot time, and the rule that holds saves after a reboot:
+# rebooted_unrestored SNAPSHOT_MTIME BOOT_EPOCH STAMP_MTIME -> 0 = hold the save
+bt=$(boot_epoch)
+[[ $bt == <-> ]] && (( bt > 0 && bt <= $(date +%s) )) && ok "boot_epoch ($FLEET_OS)" || bad "boot_epoch ($FLEET_OS): [$bt]"
+for case in "100|200||0" "100|200|150|0" "100|200|250|1" "300|200||1" "100|||1"; do
+  p=("${(@s:|:)case}")
+  rebooted_unrestored "${(@)p[1,3]}"; eq "rebooted_unrestored ${(j:,:)p[1,3]}" "$?" "${p[4]}"
+done
 
 # child_pids sees a child of this shell on both macOS and Linux
 sleep 5 & kid=$!
