@@ -130,11 +130,25 @@ case "$1 $2" in
   *) exit 3 ;;
 esac
 EOF
-printf '#!/bin/zsh\nprint "2.1.999 (Claude Code)"\n' > $t/bin/claude
+cat > $t/bin/claude <<'EOF'
+#!/bin/zsh
+print -r -- "$*" >> $FAKE_CLAUDE_LOG
+case "$*" in
+  --version) print "2.1.999 (Claude Code)" ;;
+  "plugin marketplace update") ;;
+  "plugin marketplace list --json") print -r -- "[{\"name\":\"m\",\"installLocation\":\"$FAKE_MKT\"}]" ;;
+  "plugin list --json") print -r -- '[{"id":"a@m","version":"1.0.0","scope":"user"},{"id":"b@m","version":"2.0.0","scope":"user"},
+    {"id":"c@m","version":"1.0.0","scope":"user"},{"id":"s@synced","version":"1.0.0","scope":"synced"}]' ;;
+  "plugin update a@m --scope user --json") print -r -- '{"outcome":"ok","oldVersion":"1.0.0","newVersion":"1.1.0"}' ;;
+  "plugin update b@m --scope user --json") print -r -- '{"outcome":"ok","oldVersion":"2.0.0","newVersion":"2.0.0"}' ;;
+  "plugin update c@m --scope user --json") print -r -- '{"outcome":"failed","shownCommand":{"sha256":"x","command":"sh x"}}'; exit 1 ;;
+  *) exit 3 ;;
+esac
+EOF
 chmod +x $t/bin/herdr $t/bin/claude
 print -r -- '{"sessionId":"S1","version":"2.1.1","name":"proj"}' > $t/home/.claude/sessions/999999.json
 fake() { env PATH=$t/bin:$PATH HOME=$t/home FLEET_SNAPSHOTS=${SNAP:-$t/snap} HERDR_PANE_ID=wZ:p9 FAKE_CWD=/p/proj FAKE_CRON=$t/crontab \
-  FAKE_LAUNCHD=$t/launchd FLEET_SCHEDULER=${FLEET_SCHEDULER:-} \
+  FAKE_LAUNCHD=$t/launchd FLEET_SCHEDULER=${FLEET_SCHEDULER:-} FAKE_CLAUDE_LOG=$t/claude.log FAKE_MKT=$t/mkt \
   FAKE_AGENTS=${FAKE_AGENTS:-'{"result":{"agents":[{"pane_id":"w9:p9","workspace_id":"w9","name":"proj","agent":"claude","agent_status":"idle","cwd":"/p/proj"}]}}'} \
   FAKE_PROC='{"pid":999999,"argv":["claude","--resume","S1"]}' "$@" 2>&1; }
 eq "restart-idle flags override" "$(fake $FLEET_HOME/scripts/restart-idle.sh --dry-run w9:p9 -- --model opus | tail -1)" \
@@ -207,6 +221,26 @@ if command -v plutil >/dev/null; then plutil -lint -s $pl && ok "autosave plist 
 L remove >/dev/null
 [[ ! -e $pl && ! -e $t/launchd.loaded ]] && ok "autosave launchd remove" || bad "autosave launchd remove"
 [[ $(L status) == "not installed"* ]] && ok "autosave launchd status not installed" || bad "autosave launchd status not installed"
+
+# update-plugins: a marketplace catalog where a and c have newer versions (c's only in its
+# plugin.json); c's marketplace wants to run a command to update, which is never confirmed
+mkdir -p $t/mkt/.claude-plugin $t/mkt/c/.claude-plugin
+print -r -- '{"plugins":[{"name":"a","version":"1.1.0","source":"./a"},{"name":"b","version":"2.0.0","source":"./b"},{"name":"c","source":"./c"}]}' > $t/mkt/.claude-plugin/marketplace.json
+print -r -- '{"name":"c","version":"1.2.0"}' > $t/mkt/c/.claude-plugin/plugin.json
+up() { : > $t/claude.log; fake $FLEET_HOME/scripts/update-plugins.sh "$@"; }
+out=$(up --check)
+for want in "a@m WOULD update 1.0.0 -> 1.1.0" "b@m up to date (2.0.0)" "c@m WOULD update 1.0.0 -> 1.2.0" "s@synced SKIP"; do
+  [[ $out == *"$want"* ]] && ok "update-plugins --check: $want" || bad "update-plugins --check: no [$want] in: $out"
+done
+[[ $(cat $t/claude.log) != *"plugin update"* ]] && ok "update-plugins --check installs nothing" || bad "update-plugins --check ran an update"
+out=$(up)
+for want in "a@m OK 1.0.0 -> 1.1.0" "b@m up to date (2.0.0)" "c@m NEEDS YOU" "s@synced SKIP"; do
+  [[ $out == *"$want"* ]] && ok "update-plugins: $want" || bad "update-plugins: no [$want] in: $out"
+done
+[[ $(cat $t/claude.log) != *" -y"* && $(cat $t/claude.log) != *"s@synced"* && $out != *"latest installed"* ]] \
+  && ok "update-plugins: no -y, synced untouched, no restart unasked" || bad "update-plugins log: $(cat $t/claude.log)"
+out=$(up --restart)
+[[ $out == *"latest installed"* && $out == *"w9:p9 OK"* ]] && ok "update-plugins --restart restarts the other panes" || bad "update-plugins --restart: $out"
 rm -rf $t
 
 # boot time, and the rule that holds saves after a reboot:

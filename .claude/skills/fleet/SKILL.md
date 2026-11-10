@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: Manage the AI agent fleet on this machine — Claude Code sessions, herdr workspaces/panes, and other coding agents (agy, codex, ...). Use when the user asks for agent/session status, what is blocked, to start an agent on a project (yolo, remote control), to restart sessions onto a new Claude Code version, to restart this manager session, to save the fleet before a reboot or bring it back after one (or after a herdr restart), to find stuck background loops, or why find/bfs is eating CPU.
+description: Manage the AI agent fleet on this machine — Claude Code sessions, herdr workspaces/panes, and other coding agents (agy, codex, ...). Use when the user asks for agent/session status, what is blocked, to start an agent on a project (yolo, remote control), to update Claude Code or plugins and restart sessions onto the new versions, to restart this manager session, to save the fleet before a reboot or bring it back after one (or after a herdr restart), to find stuck background loops, or why find/bfs is eating CPU.
 ---
 
 # Fleet manager
@@ -29,7 +29,9 @@ there, never into committed files. All herdr output is JSON;
 | Status | `fleet-status.sh` (claude panes: pid, version, session id, remote link, flags) plus `herdr workspace list`; `ListAgents` for non-herdr peers |
 | What's blocked | `blocked.sh` → apply the approval policy below |
 | Start agent on project | `start-agent.sh <dir> [--yolo] [--rc] [--label NAME] [--kind agy] [--force]` (refuses a dir that already has agents) |
+| Update Claude Code | `claude update` (native install: old versions stay on disk, running sessions are unaffected), then `restart-idle.sh --dry-run` and `restart-idle.sh`, then `restart-self.sh` |
 | Update sessions to new CLI | `restart-idle.sh --dry-run`, then `restart-idle.sh` (or list panes) |
+| Update plugins | `update-plugins.sh --check`, then `update-plugins.sh --restart` (restarts the other idle panes if anything changed), then `restart-self.sh`. Pass `NEEDS YOU` lines to the user: never confirm a marketplace command yourself |
 | Restart this session | `restart-self.sh` — detached helper, waits for the turn to end; end the turn right after |
 | Before a reboot | `save-fleet.sh` (snapshot: pane, dir, session id, launch flags; also Claude sessions outside herdr) |
 | Save automatically | `autosave.sh install` (every 15 min: launchd on macOS, cron on Linux); `autosave.sh status` shows the newest snapshot and the log |

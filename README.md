@@ -14,7 +14,8 @@ to do that for you:
 - **Start agents:** open a project in a new herdr workspace with an agent in it, optionally
   in `--dangerously-skip-permissions` mode with `/remote-control` on.
 - **Update without disruption:** restart idle sessions onto a newly installed Claude Code
-  version, resuming the same session with the same flags, and leave busy ones alone.
+  version, resuming the same session with the same flags, and leave busy ones alone. Update
+  plugins the same way.
 - **Survive a reboot:** snapshot every agent's pane, directory, session and launch flags (by
   hand or every 15 minutes), then bring the fleet back afterwards, putting back the flags
   herdr's own restore leaves out.
@@ -88,6 +89,7 @@ Then ask in plain language. The `fleet` skill maps requests to the scripts:
 | "what's blocked?" | `blocked.sh`, then approves safe prompts and asks you about the rest |
 | "start claude in yolo mode with remote control on myapp" | `start-agent.sh ~/projects/myapp --yolo --rc` and gives you the link |
 | "update the sessions to the new Claude Code" | `restart-idle.sh --dry-run`, then `restart-idle.sh` |
+| "update the plugins" | `update-plugins.sh --check`, then `update-plugins.sh --restart` and `restart-self.sh` |
 | "restart yourself" | `restart-self.sh` |
 | "save the fleet, I'm rebooting" | `save-fleet.sh` |
 | "save the fleet automatically" | `autosave.sh install` |
@@ -174,6 +176,22 @@ It **skips**:
   script leaves that dialog open and reports `NEEDS YOU`
 
 Grey suggested-prompt text in the input box is not counted as unsent input.
+
+### `update-plugins.sh [--check] [--restart]`
+
+Refreshes every marketplace and updates each plugin installed at user scope, printing
+`OK old -> new`, `up to date` or `FAIL` per plugin. Plugins installed for one project,
+synced from claude.ai or managed by an admin are listed and left alone. `--check` shows
+what would update and installs nothing.
+
+One install serves every session, but a running session keeps the versions it started
+with. With `--restart`, if anything changed, it runs `restart-idle.sh` on every other
+Claude Code pane (with its usual checks); restart the manager itself afterwards with
+`restart-self.sh`.
+
+When a marketplace wants to run a command to update a plugin, the script reports
+`NEEDS YOU` and leaves it: run `claude plugin update <plugin>` yourself to review the
+command. Claude Code itself updates separately: `claude update`, then `restart-idle.sh`.
 
 ### `restart-self.sh [extra claude flags]`
 
